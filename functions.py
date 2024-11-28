@@ -181,7 +181,7 @@ def lattice_tensile_test(mapdl, lattice_type, mesh_size, n_cell, relative_densit
 
     mapdl.finish()
 
-def triangle_parallel(mapdl, n_cell, wall_thickness, external_wall):
+def triangle_horizontal(mapdl, n_cell, wall_thickness, external_wall):
     design_width = 60/1000
     design_height = 25/1000
     total_width = 144/1000
