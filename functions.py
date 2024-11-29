@@ -30,8 +30,8 @@ def lattice_tensile_test(mapdl, lattice_type, mesh_size, n_cell, relative_densit
         pass
     elif lattice_type == 'kagome_sine_v':
         pass
-    elif lattice_type == 'triagnle_h':
-        pass
+    elif lattice_type == 'triangle_h':
+        wall_thickness = triangle_horizontal(mapdl, n_cell, relative_density, three_dim=three_dim, external_wall=external_wall)
     elif lattice_type == 'triangle_v':
         pass
 
@@ -181,15 +181,18 @@ def lattice_tensile_test(mapdl, lattice_type, mesh_size, n_cell, relative_densit
 
     mapdl.finish()
 
-def triangle_parallel(mapdl, n_cell, wall_thickness, external_wall):
+def triangle_horizontal(mapdl, n_cell, relative_density, external_wall=False, three_dim=True):
+    
     design_width = 60/1000
     design_height = 25/1000
     total_width = 144/1000
     total_z = 5/1000
-    external_wall_thickness = wall_thickness
 
-    cell_size = (design_height - 2*5/6*np.sqrt(3)*wall_thickness
-              - (n_cell - 1)*np.sqrt(3)*wall_thickness)/n_cell + np.sqrt(3)*wall_thickness
+    t_over_l = (np.sqrt(3) - np.sqrt(3-3*relative_density))/3
+    cell_size = design_height/(n_cell + t_over_l*2/np.sqrt(3))
+    wall_thickness = cell_size*t_over_l
+
+    external_wall_thickness = wall_thickness
     
     i = 0
     design_part = mapdl.rectng(0, design_width, 0, design_height)
@@ -253,13 +256,17 @@ def triangle_parallel(mapdl, n_cell, wall_thickness, external_wall):
             break
         i+=1
 
-        mapdl.rectng(x1=-total_width/2+design_width/2, x2=0, y1=0, y2=design_height)
-        mapdl.rectng(design_width, total_width/2+design_width/2, 0, design_height)
-        if external_wall:
-            mapdl.rectng(x1=0, x2=design_width, y1=0, y2=external_wall_thickness)
-            mapdl.rectng(x1=0, x2=design_width, y1=design_height, y2=design_height-external_wall_thickness)
-        mapdl.aadd("all")
+    mapdl.rectng(x1=-total_width/2+design_width/2, x2=0, y1=0, y2=design_height)
+    mapdl.rectng(design_width, total_width/2+design_width/2, 0, design_height)
+    if external_wall:
+        mapdl.rectng(x1=0, x2=design_width, y1=0, y2=external_wall_thickness)
+        mapdl.rectng(x1=0, x2=design_width, y1=design_height, y2=design_height-external_wall_thickness)
+    mapdl.aadd("all")
+
+    if three_dim:
         mapdl.vext("ALL", dz = total_z)
+
+    return wall_thickness
 
 def kagome_horizontal(mapdl, n_cell, relative_density, external_wall=False, three_dim=True):
     design_width = 60/1000
