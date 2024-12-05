@@ -8,7 +8,7 @@ import os
 from ansys.mapdl.core import launch_mapdl
 
 
-def lattice_tensile_test(mapdl, lattice_type, mesh_size, n_cell, relative_density, three_dim=False, filename='', external_wall=True):
+def lattice_tensile_test(mapdl, lattice_type, mesh_size, n_cell, relative_density, amplitude_ratio=0.5, three_dim=False, filename='', external_wall=True, stop_when_fail=False, total_displacement=20/1000):
     mapdl.clear()
     mapdl.prep7()
 
@@ -27,7 +27,15 @@ def lattice_tensile_test(mapdl, lattice_type, mesh_size, n_cell, relative_densit
     elif lattice_type == 'kagome_v':
         pass
     elif lattice_type == 'kagome_sine_h':
-        pass
+        try:
+            wall_thickness = kagome_sine_horizontal(mapdl, n_cell, relative_density, amplitude_ratio, three_dim=three_dim, external_wall=external_wall)
+        except:
+            with open(f"result/{lattice_type}_{'wall' if external_wall else 'nowall'}/error_log.txt", "a") as file:
+                file.write(f"An error occurred at mesh size:{mesh_size}, filename: {filename}\n")
+                file.write(traceback.format_exc())  # Writes the full stack trace
+                file.write("\n")
+            print("Geometry Error!\n\n")
+            return
     elif lattice_type == 'kagome_sine_v':
         pass
     elif lattice_type == 'triangle_h':
@@ -87,8 +95,8 @@ def lattice_tensile_test(mapdl, lattice_type, mesh_size, n_cell, relative_densit
     mapdl.antype('STATIC')
     # mapdl.nlgeom('ON')  # Enable large deformation effects
 
-    total_displacement = 0.02  # 20 mm total displacement
-    number_of_steps = 200
+    total_displacement = total_displacement  # 20 mm total displacement
+    number_of_steps = int(total_displacement/(0.1/1000))  # 0.1mm 간격
     displacement_increment = total_displacement / number_of_steps
 
     # mapdl.nropt('UNSYM')  # Use unsymmetric matrix if convergence issues occur
@@ -167,9 +175,10 @@ def lattice_tensile_test(mapdl, lattice_type, mesh_size, n_cell, relative_densit
 
         # Principal stress / UTS
 
-        if (principal_stress > UTS).sum() > 0:
-            print("Specimen failed!\n\n")
-            break
+        if stop_when_fail:
+            if (principal_stress > UTS).sum() > 0:
+                print("Specimen failed!\n\n")
+                break
 
         mapdl.solution()
 
@@ -322,6 +331,90 @@ def kagome_horizontal(mapdl, n_cell, relative_density, external_wall=False, thre
             if cell_size/2 - 1/np.sqrt(3)*wall_thickness + 2*j*cell_size > design_width:
                 break
 
+            j += 1
+
+    mapdl.rectng(x1=-total_width/2+design_width/2, x2=0, y1=0, y2=design_height)
+    mapdl.rectng(design_width, total_width/2+design_width/2, 0, design_height)
+    mapdl.aadd("all")
+
+    if three_dim:
+        mapdl.vext("ALL", dz = total_z)
+    
+    return wall_thickness
+
+
+def kagome_sine_horizontal(mapdl, n_cell, relative_density, amplitude_ratio = 0.5, external_wall=False, three_dim=True):
+    design_width = 60/1000
+    design_height = 25/1000
+    total_width = 144/1000
+    total_z = 5/1000
+
+    t_over_l = np.sqrt(3)/2 - np.sqrt(3 - 4*relative_density)/2
+    cell_size = design_height/(np.sqrt(3)*n_cell + t_over_l*(1+2*amplitude_ratio))
+    wall_thickness = cell_size*t_over_l
+    amplitude = wall_thickness*amplitude_ratio
+
+    side_length = cell_size - 1/np.sqrt(3)*wall_thickness
+    
+    # 에러 방지용. 근데 이러면 시간이 더 오래 걸리나?
+    mapdl.btol(1.0e-8)
+
+    resolution = 20
+
+    def rotate(x, y, theta):
+        return x*np.cos(theta)-y*np.sin(theta), x*np.sin(theta)+y*np.cos(theta)
+
+    def draw_sin(startx, starty, theta):
+        for i in range(resolution+1):
+            x = cell_size/resolution*i
+            y = np.sin(cell_size/resolution*i/cell_size*2*np.pi)*amplitude
+            y_prime = amplitude*2*np.pi/cell_size*np.cos(2*np.pi*x/cell_size)
+
+            dy = abs(wall_thickness/2/np.sqrt(1+1/y_prime**2)*(-1/y_prime))
+            dx = -y_prime*dy
+
+            ku1 = mapdl.k(x=startx+rotate(x+dx,y+dy,theta)[0], y=starty+rotate(x+dx,y+dy,theta)[1])
+            kd1 = mapdl.k(x=startx+rotate(x-dx,y-dy,theta)[0], y=starty+rotate(x-dx,y-dy,theta)[1])
+
+            if i != 0:
+                a1 = mapdl.a(ku1, kd1, kd0, ku0)
+
+            if i >= 2:
+                a0 = mapdl.aadd(a0, a1)
+            elif i == 1:
+                a0 = a1
+
+            ku0 = ku1
+            kd0 = kd1
+        return a0
+
+    # BTOL 조정해서, aadd를 중간중간마다 할 필요가 없기는 함.
+    for i in range(n_cell+1):
+        j = 0
+        area_list = []
+        while True:
+            startx = cell_size*j - np.sqrt(3)/2*wall_thickness
+            starty = np.sqrt(3)*cell_size*i + amplitude + wall_thickness/2
+            if startx > design_width+wall_thickness:
+                break
+            area_list.append(draw_sin(startx, starty, 0))
+            j += 1
+        for i, area in enumerate(area_list):
+            if i == 0:
+                a0 = area
+                continue
+            a0 = mapdl.aadd(area, a0)
+
+    for i in range(n_cell):
+        j = 0
+        while True:
+            if cell_size*(2*j+1-i%2) - np.sqrt(3)/2*wall_thickness > design_width+wall_thickness:
+                break
+            a1 = draw_sin(cell_size*(2*j+1-i%2) - np.sqrt(3)/2*wall_thickness, np.sqrt(3)*cell_size*i + amplitude + wall_thickness/2, np.pi/3)
+            a2 = draw_sin(cell_size*(2*j+2-i%2) - np.sqrt(3)/2*wall_thickness, np.sqrt(3)*cell_size*i + amplitude + wall_thickness/2, np.pi*2/3)
+            a3 = draw_sin(cell_size*(2*j+1-i%2) - np.sqrt(3)/2*wall_thickness, np.sqrt(3)*cell_size*(i+1) + amplitude + wall_thickness/2, -np.pi/3)
+            a4 = draw_sin(cell_size*(2*j+2-i%2) - np.sqrt(3)/2*wall_thickness, np.sqrt(3)*cell_size*(i+1) + amplitude + wall_thickness/2, -np.pi*2/3)
+            mapdl.aadd(a1, a2, a3, a4)
             j += 1
 
     mapdl.rectng(x1=-total_width/2+design_width/2, x2=0, y1=0, y2=design_height)
